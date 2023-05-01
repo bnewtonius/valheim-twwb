@@ -1,31 +1,39 @@
-variable "region" {
-  description = "The aws region. https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "availability_zones_count" {
-  description = "The number of AZs."
-  type        = number
-  default     = 2
-}
-
 variable "project" {
   description = "Name to be used on all the resources as identifier. e.g. Project name, Application name"
   type = string
   default = "bnewton-demo"
 }
 
-variable "vpc_cidr" {
-  description = "The CIDR block for the VPC. Default value is a valid CIDR, but not acceptable by AWS and should be overridden"
+variable "region" {
+  description = "The aws region. https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "us-east-2"
 }
 
-variable "subnet_cidr_bits" {
-  description = "The number of subnet bits for the CIDR. For example, specifying a value 8 for this parameter will create a CIDR with a mask of /24."
-  type        = number
-  default     = 8
+variable "cidr" {
+  #This REALLY should be a /20 or greater.  Greater means reduce that 20 to a 19... IF SO, may have to tweak the other settings.
+  description = "The cidr range to generate subnets and a dedicated vpc.  DO NOT make this less than 20 (remember CIDR notation is 21 is actually fewer IPs).  This has been tested with a size of /20, but should be tested with /19 and others."
+  default = "172.20.0.0/20"
+}
+variable "cluster_name" {
+  default = "bnewton-demo"
+}
+
+variable "private_tags" {
+  description = "Tags used to identify private subnets"
+  default = {
+    Tier = "private"
+  }
+}
+
+variable "kubeconfig_env_variables" {
+  default = {
+    AWS_PROFILE = "prod"
+  }
+}
+
+variable "create_iam_roles" {
+  default = true
 }
 
 variable "tags" {

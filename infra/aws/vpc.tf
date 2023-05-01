@@ -1,214 +1,76 @@
 
-data "aws_availability_zones" "available" {}
+variable "vpc_name" {
+  default = "base-vpc"
+}
 
-# VPC
-resource "aws_vpc" "this" {
-  cidr_block = var.vpc_cidr
+locals {
+  tags = {
+    "kubernetes.io/cluster/${var.project}" = "shared"
+  }
 
+  public_subnet_tags = {
+    "kubernetes.io/cluster/${var.project}" = "shared"
+    "kubernetes.io/role/elb"                      = "1"
+    "Tier"                                        = "public"
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/cluster/${var.project}" = "shared"
+    "kubernetes.io/role/internal-elb"             = "1"
+    "Tier"                                        = "private"
+  }
+  database_subnet_tags = {
+    "Tier"                                        = "database"
+  }
+}
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "2.70.0"
+
+  name = var.vpc_name
+  cidr = var.cidr
+  azs  = data.aws_availability_zones.available.names
+  ## Allow a limited number of "public" addresses.  NOMINALLY we'd use an ALB or two or ingress controllers vs. lots of individual public addresses
+  public_subnets = [
+    #Given a /20 this would allow 256 addresses PER subnet so a total of 728 addresses
+    cidrsubnet(var.cidr, 4, 1),
+    cidrsubnet(var.cidr, 4, 2),
+    cidrsubnet(var.cidr, 4, 3)
+  ]
+  private_subnets = [
+    #Given a /20 this would allow 512 addresses PER subnet so a total of over 1500 addresses
+    cidrsubnet(var.cidr, 3, 3),
+    cidrsubnet(var.cidr, 3, 4),
+    cidrsubnet(var.cidr, 3, 5)]
+  # Allow for redis/elasticache/rds/etc.
+  database_subnets = [
+    #Given a /20 this would allow 512 addresses PER subnet so a total of over 1500 addresses
+    cidrsubnet(var.cidr, 4, 13),
+    cidrsubnet(var.cidr, 4, 14),
+    cidrsubnet(var.cidr, 4, 15)
+  ]
+  enable_nat_gateway   = true
+##  With this defaut is false, will create one for the maximum length of subnets. So with 3 db subnets, 3 private, you'd get 3 nat gateways.  With 4 db subnets, 3 private, you'd get 4 nat gateways
+  single_nat_gateway   = false
   enable_dns_hostnames = true
-  enable_dns_support   = true
+  enable_s3_endpoint = true
+  #enable_ssm_endpoint = true
 
+  tags = merge(local.tags,var.tags)
+
+  public_subnet_tags = merge(local.public_subnet_tags,var.tags)
+
+  private_subnet_tags = merge(local.private_subnet_tags,var.tags)
+  database_subnet_tags = merge(local.database_subnet_tags,var.tags)
+}
+
+/*
+This should wipe out any default rules and force to avoid using the default security group
+*/
+resource "aws_default_security_group" "sg_default" {
+  vpc_id = module.vpc.vpc_id
   tags = {
-    Name                                           = "${var.project}-vpc",
-    "kubernetes.io/cluster/${var.project}-cluster" = "shared"
+    Name = "DO_NOT_USE"
   }
-}
-
-# Public Subnets
-resource "aws_subnet" "public" {
-  count = var.availability_zones_count
-
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, count.index)
-  availability_zone = data.aws_availability_zones.available.names[count.index]
-
-  tags = {
-    Name                                           = "${var.project}-public-sg"
-    "kubernetes.io/cluster/${var.project}-cluster" = "shared"
-    "kubernetes.io/role/elb"                       = 1
-  }
-
-  map_public_ip_on_launch = true
-}
-
-# Private Subnets
-resource "aws_subnet" "private" {
-  count = var.availability_zones_count
-
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, count.index + var.availability_zones_count)
-  availability_zone = data.aws_availability_zones.available.names[count.index]
-
-  tags = {
-    Name                                           = "${var.project}-private-sg"
-    "kubernetes.io/cluster/${var.project}-cluster" = "shared"
-    "kubernetes.io/role/internal-elb"              = 1
-  }
-}
-
-# Internet Gateway
-resource "aws_internet_gateway" "this" {
-  vpc_id = aws_vpc.this.id
-
-  tags = {
-    "Name" = "${var.project}-igw"
-  }
-
-  depends_on = [aws_vpc.this]
-}
-
-# Route Table(s)
-# Route the public subnet traffic through the IGW
-resource "aws_route_table" "main" {
-  vpc_id = aws_vpc.this.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.this.id
-  }
-
-  tags = {
-    Name = "${var.project}-Default-rt"
-  }
-}
-
-# Route table and subnet associations
-resource "aws_route_table_association" "internet_access" {
-  count = var.availability_zones_count
-
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.main.id
-}
-
-# NAT Elastic IP
-resource "aws_eip" "main" {
-  vpc = true
-
-  tags = {
-    Name = "${var.project}-ngw-ip"
-  }
-}
-
-# NAT Gateway
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.main.id
-  subnet_id     = aws_subnet.public[0].id
-
-  tags = {
-    Name = "${var.project}-ngw"
-  }
-}
-
-# Add route to route table
-resource "aws_route" "main" {
-  route_table_id         = aws_vpc.this.default_route_table_id
-  nat_gateway_id         = aws_nat_gateway.main.id
-  destination_cidr_block = "0.0.0.0/0"
-}
-
-# Security group for public subnet
-resource "aws_security_group" "public_sg" {
-  name   =  "${var.project}-Public-sg"
-  vpc_id = aws_vpc.this.id
-
-  tags = {
-    Name = "${var.project}-Public-sg"
-  }
-}
-
-# Security group traffic rules
-resource "aws_security_group_rule" "sg_ingress_public_443" {
-  security_group_id = aws_security_group.public_sg.id
-  type              = "ingress"
-  from_port         = 443
-  to_port           = 443
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-}
-
-resource "aws_security_group_rule" "sg_ingress_public_80" {
-  security_group_id = aws_security_group.public_sg.id
-  type              = "ingress"
-  from_port         = 80
-  to_port           = 80
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-}
-
-resource "aws_security_group_rule" "sg_egress_public" {
-  security_group_id = aws_security_group.public_sg.id
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-}
-
-# Security group for data plane
-resource "aws_security_group" "data_plane_sg" {
-  name   =  "${var.project}-Worker-sg"
-  vpc_id = aws_vpc.this.id
-
-  tags = {
-    Name = "${var.project}-Worker-sg"
-  }
-}
-
-# Security group traffic rules
-resource "aws_security_group_rule" "nodes" {
-  description       = "Allow nodes to communicate with each other"
-  security_group_id = aws_security_group.data_plane_sg.id
-  type              = "ingress"
-  from_port         = 0
-  to_port           = 65535
-  protocol          = "-1"
-  cidr_blocks       = flatten([cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 0), cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 1), cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 2), cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 3)])
-}
-
-resource "aws_security_group_rule" "nodes_inbound" {
-  description       = "Allow worker Kubelets and pods to receive communication from the cluster control plane"
-  security_group_id = aws_security_group.data_plane_sg.id
-  type              = "ingress"
-  from_port         = 1025
-  to_port           = 65535
-  protocol          = "tcp"
-  cidr_blocks       = flatten([cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 2), cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 3)])
-}
-
-resource "aws_security_group_rule" "node_outbound" {
-  security_group_id = aws_security_group.data_plane_sg.id
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-}
-
-# Security group for control plane
-resource "aws_security_group" "control_plane_sg" {
-  name   = "${var.project}-ControlPlane-sg"
-  vpc_id = aws_vpc.this.id
-
-  tags = {
-    Name = "${var.project}-ControlPlane-sg"
-  }
-}
-
-# Security group traffic rules
-resource "aws_security_group_rule" "control_plane_inbound" {
-  security_group_id = aws_security_group.control_plane_sg.id
-  type              = "ingress"
-  from_port         = 0
-  to_port           = 65535
-  protocol          = "tcp"
-  cidr_blocks       = flatten([cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 0), cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 1), cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 2), cidrsubnet(var.vpc_cidr, var.subnet_cidr_bits, 3)])
-}
-
-resource "aws_security_group_rule" "control_plane_outbound" {
-  security_group_id = aws_security_group.control_plane_sg.id
-  type              = "egress"
-  from_port         = 0
-  to_port           = 65535
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
 }
