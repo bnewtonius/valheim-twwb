@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: valheim-deployment
+  name: valheim-deployment
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valheim-deployment-pod
+  template:
+    metadata:
+      labels:
+        app: valheim-deployment-pod
+    spec:
+      containers:
+      - image: steamcmd/steamcmd:latest
+        name: valheim-server
+        ports:
+        - containerPort: 2456
+          protocol: UDP
+        - containerPort: 2457
+          protocol: UDP
+        command: ["sh /data/start_server.sh"]
+        volumeMounts:
+        - name: valheim-data
+          mountPath: /data
+        lifecycle:
+          preStop:
+            exec:
+              command: [" echo","1",">","/data/server_exit.drp"]
+      volumes:
+        - name: valheim-data
+          hostPath:
+            path: /opt/valheim-data
+            type: Directory
+      nodeSelector:
+        kubernetes.io/hostname: kubenode1
